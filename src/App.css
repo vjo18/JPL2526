@@ -1,0 +1,111 @@
+/* ===========================
+   Tables: shared utilities
+   =========================== */
+.player-stats-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.player-stats-table th,
+.player-stats-table td {
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Keep both player tables perfectly aligned and avoid desktop horizontal scroll */
+.player-stats-table th:nth-child(1),
+.player-stats-table td:nth-child(1) { /* Speler */
+  width: 260px;
+}
+
+.player-stats-table th:nth-child(2),
+.player-stats-table td:nth-child(2) { /* Type */
+  width: 100px;
+}
+
+/* Compact numeric columns, right-aligned */
+.player-stats-table th:nth-child(n+3),
+.player-stats-table td:nth-child(n+3) {
+  width: 66px;          /* tweak to 62px if you need extra margin */
+  text-align: right;
+}
+
+/* First column (name): single line + ellipsis */
+.player-stats-table td:first-child {
+  max-width: 220px;
+}
+
+/* Scroll wrapper for player tables:
+   - Mobile: allow horizontal scroll
+   - Desktop: no scroll (content fits) */
+.ps-scroll {
+  overflow-x: auto;
+}
+@media (min-width: 1024px) {
+  .ps-scroll {
+    overflow-x: visible;
+  }
+}
+
+/* ===========================
+   Head-to-head table
+   First column left, others centered
+   =========================== */
+.h2h-table th,
+.h2h-table td {
+  text-align: center;
+}
+.h2h-table th:first-child,
+.h2h-table td:first-child {
+  text-align: left;
+}
+
+/* ===========================
+   Home vs Away table
+   First column left, others centered
+   =========================== */
+.homeaway-table th,
+.homeaway-table td {
+  text-align: center;
+}
+.homeaway-table th:first-child,
+.homeaway-table td:first-child {
+  text-align: left;
+}
+
+.player-stats-table th {
+  position: relative;
+  white-space: nowrap;
+  padding-right: 16px; /* extra ruimte voor sorteericoon */
+}
+
+.player-stats-table th .sort-icon {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+/* Duidelijke basis op alle schermen */
+html, body {
+  background-color: #f8fafc; /* gray-50 */
+  color: #111827;            /* gray-900 */
+}
+
+/* Tabellen/kaarten blijven licht */
+.card, .table-container, .player-stats-table {
+  background-color: #ffffff;
+  color: #111827;
+}
+
+/* Zorg dat mobiele browsers tekst niet “vervormen” */
+@media (max-width: 640px) {
+  html, body { -webkit-text-size-adjust: 100%; }
+}
