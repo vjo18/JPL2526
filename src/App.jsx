@@ -11,13 +11,8 @@ import {
 } from "recharts";
 
 
-const ALLOWED_TEAMS = [
-  "K. Eendr. Wervik A","K.S.C. Wielsbeke","K.R.C. Waregem A","Zwevegem Sport",
-  "K. FC Marke A","K. RC Bissegem","S.V. Wevelgem City A","FC Sp. Heestert A",
-  "Club Roeselare","K. WS Oudenburg","K. VC Ardooie A","KFC Aalbeke Sport A",
-  "K. SV Moorsele A","K. FC Varsenare A","K. FC Heist A","K. SV Bredene A",
-];
-const DEFAULT_TEAM = "K. VC Ardooie A";
+
+//const DEFAULT_TEAM = "K. VC Ardooie A";
 const BINS = ["0-14","15-30","31-45","46-59","60-75","76-90"];
 const fmt = (v) => (v === 0 || Number.isFinite(v)) ? v : "—";
 
@@ -77,7 +72,7 @@ const Last5Strip = React.memo(function Last5Strip({ seq }) {
 const EloRankingTable = ({ teamName, teamsStats }) => {
   const rows = React.useMemo(
     () => (teamsStats || [])
-      .filter(t => ALLOWED_TEAMS.includes(t.Team))
+      //.filter(t => ALLOWED_TEAMS.includes(t.Team))
       .map(t => ({ Team: t.Team, ELO: Number(t.ELO ?? 0) }))
       .sort((a, b) => (b.ELO - a.ELO) || a.Team.localeCompare(b.Team)),
     [teamsStats]
@@ -322,7 +317,7 @@ const HeadToHeadTable = React.memo(function HeadToHeadTable({
 }) {
   const rows = useMemo(() => {
   const r = (teamsStats || [])
-    .filter((ts) => ALLOWED_TEAMS.includes(ts.Team))
+    //.filter((ts) => ALLOWED_TEAMS.includes(ts.Team))
     .map((ts) => ({
       Team: ts.Team,
       Played: ts.Played ?? ts.Matches ?? 0, // fallback als kolom anders heet
@@ -1931,7 +1926,7 @@ function EloChart({ data, showOpp }) {
 
 /* ------------------ Main App ------------------ */
 export default function App() {
-  const [team, setTeam] = useState(DEFAULT_TEAM);
+  const [team, setTeam] = useState("");
   const [teamStats, setTeamStats] = useState([]);
   const [h2h, setH2H] = useState(null);
   const [homeAway, setHomeAway] = useState(null);
@@ -1986,7 +1981,33 @@ export default function App() {
 
 
 
-  const teams = useMemo(()=> ALLOWED_TEAMS.slice().sort((a,b)=>a.localeCompare(b)), []);
+  const teams = useMemo(() => {
+    // Dynamisch: haal unieke teamnamen uit teamStats (geen hardgecodeerde lijst)
+    const set = new Set();
+    (teamStats || []).forEach((row) => {
+      const name = row?.Team;
+      if (name) set.add(name);
+    });
+
+    // alfabetisch sorteren
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [teamStats]);
+
+  // Zorg dat de geselecteerde ploeg altijd geldig is:
+  // - als er geen teams zijn: selectie leegmaken
+  // - als huidige selectie niet in de lijst zit: kies eerste team
+  useEffect(() => {
+    if (!teams.length) {
+      if (team) setTeam("");
+      return;
+    }
+    if (!team || !teams.includes(team)) {
+      setTeam(teams[0]);
+    }
+  }, [teams, team]);
+
+
+
   const myHomeAway = homeAway?.[team];
   const myEvent = eventBins?.[team];
   const myFirstScorer = firstScorer?.[team];
@@ -2044,7 +2065,7 @@ const timingScatterData = useMemo(() => {
 
   const out = [];
 
-  for (const t of ALLOWED_TEAMS) {
+  for (const t of teams) {
     const rec = eventBins[t];
     if (!rec?.timing) continue;
 
@@ -2058,7 +2079,7 @@ const timingScatterData = useMemo(() => {
     });
   }
   return out;
-}, [eventBins, team]);
+}, [eventBins, team, teams]);
 
 
 
@@ -2151,18 +2172,18 @@ const timingScatterData = useMemo(() => {
   const last5Map = useMemo(() => {
   if (!eloMap) return {};
   const out = {};
-  for (const t of ALLOWED_TEAMS) {
+  for (const t of teams) {
     const seq = eloMap?.[t]?.res || [];
     out[t] = seq.slice(-5); // laatste 5, in volgorde zoals in JSON
   }
   return out;
-}, [eloMap]);
+}, [eloMap, teams]);
 
 
   // -------- NIEUW: data voor bar charts uit teamStats ----------
   const rowsForm = useMemo(
     () => (teamStats || [])
-      .filter(t => ALLOWED_TEAMS.includes(t.Team))
+      //.filter(t => ALLOWED_TEAMS.includes(t.Team))
       .map(t => ({ team: t.Team, value: t["ELO +/- L5"] ?? 0 }))
       .sort((a, b) => (b.value - a.value) || a.team.localeCompare(b.team)),
     [teamStats]
@@ -2170,7 +2191,7 @@ const timingScatterData = useMemo(() => {
 
   const rowsOpp = useMemo(
     () => (teamStats || [])
-      .filter(t => ALLOWED_TEAMS.includes(t.Team))
+      //.filter(t => ALLOWED_TEAMS.includes(t.Team))
       .map(t => ({ team: t.Team, value: t["ELO opp diff tot"] ?? 0 }))
       .sort((a, b) => (b.value - a.value) || a.team.localeCompare(b.team)),
     [teamStats]
@@ -2184,9 +2205,9 @@ const minMinutesForRapm = useMemo(() => {
 
   let maxMinutes = 0;
 
-  for (const teamName of ALLOWED_TEAMS) {
-    const arr = playerStats[teamName] || [];
-    for (const p of arr) {
+  for (const [teamName, arr] of Object.entries(playerStats)) {
+    for (const p of arr || []) {
+
       const mins = Number(p.Speelminuten ?? p["Minutes"] ?? 0);
       if (Number.isFinite(mins) && mins > maxMinutes) {
         maxMinutes = mins;
@@ -2204,8 +2225,8 @@ const teamRapmBoxData = useMemo(() => {
 
   const out = [];
 
-  for (const teamName of ALLOWED_TEAMS) {
-    const arr = playerStats[teamName] || [];
+  for (const [teamName, arrRaw] of Object.entries(playerStats)) {
+    const arr = arrRaw || [];
 
     const rapms = arr
       .filter(p => {
@@ -2249,8 +2270,8 @@ const teamXppmBoxData = useMemo(() => {
 
   const out = [];
 
-  for (const teamName of ALLOWED_TEAMS) {
-    const arr = playerStats[teamName] || [];
+  for (const [teamName, arrRaw] of Object.entries(playerStats)) {
+    const arr = arrRaw || [];
 
     const vals = arr
       .filter((p) => {
@@ -2295,7 +2316,7 @@ const teamXppmBoxData = useMemo(() => {
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white text-gray-900">
       <div className="max-w-screen-2xl mx-auto px-6 py-8">
         <header className="mb-6">
-          <h1 className="text-3xl font-semibold">P1 West-Vlaanderen 2025-2026</h1>
+          <h1 className="text-3xl font-semibold">Jupiler Pro League 2025-2026</h1>
           <p className="text-gray-500">Selecteer een team om het overzicht te tonen.</p>
         </header>
 

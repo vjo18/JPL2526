@@ -9,6 +9,7 @@ from build_player_stats import (
     PLAYER_INPUT,
     MATCH_EVENTS,
     load_calendar,
+    build_player_stats_df,
 )
 
 # =========================== GOOGLE SHEETS (CSV) ============================
@@ -35,12 +36,6 @@ GID_DATA_TEAM_PREV = ""            # laat leeg als je dit niet gebruikt
 GID_DATA_TEAM_24_25 = ""  # tab: Data Team 24_25 (vorig seizoen)
 
 
-ALLOWED = [
-    "K. Eendr. Wervik A","K.S.C. Wielsbeke","K.R.C. Waregem A","Zwevegem Sport",
-    "K. FC Marke A","K. RC Bissegem","S.V. Wevelgem City A","FC Sp. Heestert A",
-    "Club Roeselare","K. WS Oudenburg","K. VC Ardooie A","KFC Aalbeke Sport A",
-    "K. SV Moorsele A","K. FC Varsenare A","K. FC Heist A","K. SV Bredene A",
-]
 
 SEP = (",", ":")  # minified JSON
 
@@ -71,13 +66,34 @@ def _read_csv(gid: str | int, usecols=None):
 
 
 
+
+
+def _load_allowed_teams_from_teamstats() -> list[str]:
+    """
+    Lees alle unieke teams uit team_stats.csv (kolom 'Team')
+    en gebruik die als ALLOWED.
+    """
+    ts = _read_csv(GID_TEAM_STATS, usecols=["Team"])
+    teams = (
+        ts["Team"]
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    teams.sort()
+    return teams
+
+ALLOWED: list[str] = _load_allowed_teams_from_teamstats()
+
+
 # ============================== TEAM STATS ==================================
 
 def export_team_stats(xfile: str, dst: Path):
     df = _read_csv(GID_TEAM_STATS)
 
-    # Enkel de ploegen die mogen
-    df = df[df["Team"].isin(ALLOWED)].copy()
 
     # Hernoem kolommen naar wat de app verwacht
     rename_map = {
@@ -162,12 +178,12 @@ def export_h2h_all(xfile: str, dst: Path):
     # Parseer datum meteen in dag/maand volgorde voor correcte sortering/formattering
     dt["date"] = pd.to_datetime(dt["date"], errors="coerce", dayfirst=True)
 
-
+    teams = sorted(set(dt["homeTeam"]).union(dt["awayTeam"]))
     data = {}
-    for team in ALLOWED:
+    for team in teams:
         sub = dt[(dt.homeTeam == team) | (dt.awayTeam == team)]
         h2h = {}
-        for opp in ALLOWED:
+        for opp in teams:
             if opp == team:
                 h2h[opp] = {"home": {"text": None, "res": None}, "away": {"text": None, "res": None}}
                 continue
@@ -183,18 +199,17 @@ def export_h2h_all(xfile: str, dst: Path):
 
     _minidump(data, dst)
 
-# ============================== HOME / AWAY =================================
-
 def export_homeaway_all(xfile: str, dst: Path):
     dt = _read_csv(GID_DATA_TEAM)
     played = dt[pd.notna(dt.homeScore) & pd.notna(dt.awayScore)].copy()
     played["homeScore"] = pd.to_numeric(played["homeScore"], errors="coerce").astype(int)
     played["awayScore"] = pd.to_numeric(played["awayScore"], errors="coerce").astype(int)
 
+    teams = sorted(set(played["homeTeam"]).union(played["awayTeam"]))
     out = {t: {
         "home": {"matches": 0, "W": 0, "G": 0, "V": 0, "points": 0, "GF": 0, "GA": 0},
         "away": {"matches": 0, "W": 0, "G": 0, "V": 0, "points": 0, "GF": 0, "GA": 0}
-    } for t in ALLOWED}
+    } for t in teams}
 
     for _, r in played.iterrows():
         h, a, hs, as_ = r.homeTeam, r.awayTeam, int(r.homeScore), int(r.awayScore)
@@ -717,6 +732,22 @@ def export_player_stats_all(xfile: str, dst: Path):
         df["MVP p>20/90min"] = df["RAPM_per90"]
 
 
+     # ===================== RAPM_safe (shrinkage) =====================
+    # Doel: spelers met hoge RAPM maar enorme onzekerheid dempen.
+    # Keuze: conservative lower-bound idee: RAPM - 1.0 * SE
+    # (je kan multiplier later tunen: 0.5, 1.0, 1.5, 1.96)
+    if "RAPM_per90" in df.columns and "RAPM_SE_per90" in df.columns:
+        rapm = pd.to_numeric(df["RAPM_per90"], errors="coerce").fillna(0.0)
+        se   = pd.to_numeric(df["RAPM_SE_per90"], errors="coerce").fillna(0.0)
+        df["RAPM_safe_per90"] = rapm - 1.0 * se
+    elif "RAPM_per90" in df.columns:
+        # fallback: geen SE => RAPM_safe = RAPM
+        df["RAPM_safe_per90"] = pd.to_numeric(df["RAPM_per90"], errors="coerce").fillna(0.0)
+    else:
+        df["RAPM_safe_per90"] = 0.0
+
+
+
 
     # helper: kolom ophalen als die bestaat
     def pick(name: str):
@@ -759,6 +790,27 @@ def export_player_stats_all(xfile: str, dst: Path):
         "xPPM_CI_low": "xPPM_CI_low",
         "xPPM_CI_high": "xPPM_CI_high",
         "xPPM_z": "xPPM_z",
+        # 🔽 NIEUW: scouting-metrics
+        "RAPM_SNR": "RAPM_SNR",
+        "xPPM_SNR": "xPPM_SNR",
+        "Reliability_overall": "Reliability_overall",
+        "ImpactScore": "ImpactScore",
+        "StabilityScore": "StabilityScore",
+        "RAPM_R2_overall": "RAPM_R2_overall",
+        "RAPM_R2_by_round": "RAPM_R2_by_round",
+
+        # 🔽 FINAL SCOUTING SCORE
+        "FinalScoutingScore": "FinalScoutingScore",
+        "Impact_norm": "Impact_norm",
+        "Confidence": "Confidence",
+        "Minutes_factor": "Minutes_factor",
+
+        # 🔽 EXPLAINABILITY (tekst)
+        "Explain_Impact": "Explain_Impact",
+        "Explain_Reliability": "Explain_Reliability",
+        "Explain_Stability": "Explain_Stability",
+        
+        "RAPM_safe_per90": "RAPM_safe_per90",
 
 
     }
@@ -806,6 +858,24 @@ def export_player_stats_all(xfile: str, dst: Path):
         "xPPM_CI_low",
         "xPPM_CI_high",
         "xPPM_z",
+        # 🔽 NIEUW: scouting-metrics
+        "RAPM_SNR",
+        "xPPM_SNR",
+        "Reliability_overall",
+        "ImpactScore",
+        # 🔽 NIEUW
+        "StabilityScore",
+        "RAPM_R2_overall",
+
+        # 🔽 FINAL SCOUTING SCORE (numeriek)
+        "FinalScoutingScore",
+        "Impact_norm",
+        "Confidence",
+        "Minutes_factor",
+
+        "RAPM_safe_per90",
+
+
     ]
 
 
@@ -813,6 +883,25 @@ def export_player_stats_all(xfile: str, dst: Path):
     for c in metric_cols:
         if c in work:
             work[c] = pd.to_numeric(work[c], errors="coerce").fillna(0.0).astype(float)
+
+        # ===================== Percentielen (league-wide) =====================
+    # Dynamisch: groeit vanzelf met het seizoen.
+    # Nuttig voor sliders/filters in dashboard: minutes_pct, rapm_pct, xppm_pct, rapm_safe_pct, confidence_pct, etc.
+    def add_pct(colname: str, outname: str):
+        if colname in work.columns:
+            s = pd.to_numeric(work[colname], errors="coerce")
+            # rank(pct=True): 0..1, we maken 0..100
+            work[outname] = (s.rank(pct=True) * 100.0).round(1)
+        else:
+            work[outname] = 0.0
+
+    add_pct("Speelminuten", "minutes_pct")
+    add_pct("RAPM_per90", "rapm_pct")
+    add_pct("xPPM_per90", "xppm_pct")
+    add_pct("RAPM_safe_per90", "rapm_safe_pct")
+    add_pct("Confidence", "confidence_pct")
+    add_pct("FinalScoutingScore", "scout_score_pct")
+
 
     # laatste-5-kolommen uit de CSV halen
     l5_map = {
@@ -1104,6 +1193,90 @@ def export_elo_series(xfile: str, out_file: Path):
 
     out_file.write_text(json.dumps(out, ensure_ascii=False, indent=2))
 
+# ============================ PLAYER HISTORY ============================
+
+def export_player_history_all(xfile: str, dst: Path):
+    """Export per-player per-round evolution for the dashboard modal.
+
+    Output format:
+      {
+        "Team__Speler": [
+          {"Round": 1, "FinalScoutingScore": 0.12, "ImpactScore": 0.05, "Confidence": 0.20, "Speelminuten": 90},
+          ...
+        ],
+        ...
+      }
+    """
+    # base logs (match-level player minutes/events)
+    pm = pd.read_csv(PLAYER_INPUT)
+    me = pd.read_csv(MATCH_EVENTS)
+
+    cal = load_calendar().copy()
+    cal["date"] = pd.to_datetime(cal["date"], errors="coerce")
+
+    # determine round index
+    if "round" in cal.columns and cal["round"].notna().any():
+        cal["round"] = pd.to_numeric(cal["round"], errors="coerce")
+    else:
+        # fallback: round = dense rank of date (chronological matchdays)
+        cal = cal.sort_values("date")
+        cal["round"] = cal["date"].rank(method="dense").astype(int)
+
+    # map url -> round
+    url_round = cal.dropna(subset=["url"]).set_index("url")["round"].to_dict()
+
+    # attach round to player-match logs
+    if "Match URL" in pm.columns:
+        pm["round"] = pm["Match URL"].map(url_round)
+    else:
+        raise RuntimeError("PLAYER_INPUT mist kolom 'Match URL'")
+
+    # rounds to compute
+    rounds = sorted([int(r) for r in pd.Series(pm["round"]).dropna().unique().tolist()])
+    if not rounds:
+        _minidump({}, dst)
+        return
+
+    out_map: dict[str, list[dict]] = {}
+
+    # compute snapshots cumulatively up to each round
+    for r in rounds:
+        urls_r = set([u for u, rr in url_round.items() if rr is not None and int(rr) <= int(r)])
+
+        pm_sub = pm[pm["Match URL"].isin(urls_r)].copy()
+        if "matchurl" in me.columns:
+            me_sub = me[me["matchurl"].isin(urls_r)].copy()
+        else:
+            # fallback for different naming
+            col = "Match URL" if "Match URL" in me.columns else None
+            me_sub = me[me[col].isin(urls_r)].copy() if col else me.copy()
+
+        snap = build_player_stats_df(pm_sub, me_sub, calendar_df=cal)
+
+        if snap is None or snap.empty:
+            continue
+
+        for _, row in snap.iterrows():
+            team = str(row.get("Team", "")).strip()
+            speler = str(row.get("Speler", "")).strip()
+            if not team or not speler:
+                continue
+            key = f"{team}__{speler}"
+            rec = {
+                "Round": int(r),
+                "FinalScoutingScore": float(pd.to_numeric(row.get("FinalScoutingScore"), errors="coerce") or 0.0),
+                "ImpactScore": float(pd.to_numeric(row.get("ImpactScore"), errors="coerce") or 0.0),
+                "Confidence": float(pd.to_numeric(row.get("Confidence"), errors="coerce") or 0.0),
+                "Speelminuten": float(pd.to_numeric(row.get("Speelminuten"), errors="coerce") or 0.0),
+            }
+            out_map.setdefault(key, []).append(rec)
+
+    # sort each player list by round
+    for k in list(out_map.keys()):
+        out_map[k] = sorted(out_map[k], key=lambda x: x.get("Round", 0))
+
+    _minidump(out_map, dst)
+
 # ================================= CLI ======================================
 
 def main():
@@ -1117,12 +1290,13 @@ def main():
     export_first_scorer_all(x, od / "team_first_scorer.json")
     export_halftime_fulltime_all(x, od / "team_halftime_fulltime.json")
     export_player_stats_all(x, od / "player_stats.json")
+    export_player_history_all(x, od / "player_history.json")
     export_points_series(x, od / "team_points.json")
     export_elo_series(x, od / "team_elo.json")
     export_rapm_segments_all(x, od / "team_rapm_segments.json")
     print(
         "OK → team_stats, h2h, homeaway, event_bins, first_scorer, "
-        "halftime_fulltime, player_stats, team_points, team_elo, team_rapm_segments"
+        "halftime_fulltime, player_stats, player_history, team_points, team_elo, team_rapm_segments"
     )
 
 

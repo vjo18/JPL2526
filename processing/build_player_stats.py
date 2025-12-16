@@ -31,12 +31,59 @@ def parse_dutch_date(s: str) -> pd.Timestamp:
     year = int(parts[2])
     return pd.Timestamp(year=year, month=month, day=day)
 
+
 def load_calendar():
     with open(CALENDAR_JSON, "r", encoding="utf8") as f:
         matches = json.load(f)
     d = pd.DataFrame(matches)
-    d["date"] = d["date"].apply(parse_dutch_date)
-    return d[["url", "date"]]
+
+    # date (NL) -> Timestamp
+    if "date" in d.columns:
+        d["date"] = d["date"].apply(parse_dutch_date)
+    else:
+        d["date"] = pd.NaT
+
+    # 1) Gebruik een bestaande ronde/speeldag kolom indien aanwezig
+    round_col = None
+    for c in ["round", "Round", "speeldag", "Speeldag", "matchweek", "Matchweek", "gw", "GW"]:
+        if c in d.columns:
+            round_col = c
+            break
+    if round_col is not None:
+        d["round"] = pd.to_numeric(d[round_col], errors="coerce")
+        return d[["url", "date", "round"]]
+
+    # 2) Anders: reconstrueer 'speeldag' uit kalender (round-robin logica)
+    #    Nieuwe speeldag start zodra een team voor de 2e keer voorkomt in de lopende speeldag.
+    if "homeTeam" in d.columns and "awayTeam" in d.columns and d["date"].notna().any():
+        d = d.sort_values(["date", "url"], kind="stable").reset_index(drop=True)
+
+        rounds = []
+        current_round = 1
+        teams_seen: set[str] = set()
+
+        for _, r in d.iterrows():
+            ht = str(r.get("homeTeam", "")).strip()
+            at = str(r.get("awayTeam", "")).strip()
+
+            if ht in teams_seen or at in teams_seen:
+                current_round += 1
+                teams_seen = set()
+
+            rounds.append(current_round)
+            if ht:
+                teams_seen.add(ht)
+            if at:
+                teams_seen.add(at)
+
+        d["round"] = rounds
+        return d[["url", "date", "round"]]
+
+    # 3) Fallback: dense rank op datum (chronologische matchdays)
+    d = d.sort_values(["date", "url"], kind="stable").reset_index(drop=True)
+    d["round"] = d["date"].rank(method="dense").astype(int)
+    return d[["url", "date", "round"]]
+
 
 
 def load_team_elo(path: str = TEAM_ELO_JSON):
@@ -1018,11 +1065,654 @@ def build_player_stats():
     out["xPPM_CI_high"]     = out["Speler"].map(xppm_ci_high).round(3)
     out["xPPM_z"]           = out["Speler"].map(xppm_z).round(2)
 
+    # =========================
+    # SAFE IMPACT (conservatief)
+    # =========================
+    # Idee: als de schatting positief is → neem ondergrens CI (worst case)
+    #      als de schatting negatief is → neem bovengrens CI (least bad case)
+    # Zo krijg je een "conservatieve" score die je als scout durft te gebruiken.
+
+    rapm = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0)
+    rapm_ci_low = pd.to_numeric(out.get("RAPM_CI_low"), errors="coerce").fillna(0.0)
+    rapm_ci_high = pd.to_numeric(out.get("RAPM_CI_high"), errors="coerce").fillna(0.0)
+
+    xppm = pd.to_numeric(out.get("xPPM_per90"), errors="coerce").fillna(0.0)
+    xppm_ci_low = pd.to_numeric(out.get("xPPM_CI_low"), errors="coerce").fillna(0.0)
+    xppm_ci_high = pd.to_numeric(out.get("xPPM_CI_high"), errors="coerce").fillna(0.0)
+
+    out["RAPM_safe_per90"] = np.where(rapm >= 0, rapm_ci_low, rapm_ci_high).round(3)
+    out["xPPM_safe_per90"] = np.where(xppm >= 0, xppm_ci_low, xppm_ci_high).round(3)
+
+    # Optioneel: gecombineerde safe impact (voor eenvoudige shortlists)
+    out["SafeImpact_per90"] = (out["RAPM_safe_per90"] + out["xPPM_safe_per90"]).round(3)
+
+
+    # ========= Scouting metrics: S/N, betrouwbaarheid, impactscore =========
+
+    # veilige numerieke kopieën
+    mins = pd.to_numeric(out.get("Speelminuten"), errors="coerce").fillna(0.0)
+
+    rapm = pd.to_numeric(out.get("RAPM_per90"), errors="coerce")
+    rapm_se = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
+
+    xppm = pd.to_numeric(out.get("xPPM_per90"), errors="coerce")
+    xppm_se = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
+
+    # signaal/ruis-ratio's
+    out["RAPM_SNR"] = (rapm.abs() / rapm_se).replace([np.inf, -np.inf], np.nan).round(3)
+    out["xPPM_SNR"] = (xppm.abs() / xppm_se).replace([np.inf, -np.inf], np.nan).round(3)
+
+    # Minutenfactor op basis van percentiel (dynamisch doorheen seizoen)
+    # Neem bv. p80 als "ongeveer vaste basisspeler" referentie
+    mins_ref = float(mins[mins > 0].quantile(0.80)) if (mins > 0).any() else 1.0
+    mins_ref = max(mins_ref, 1.0)
+    minutes_factor = np.clip(mins / mins_ref, 0, 1)
+
+
+    def snr_to_conf(snr):
+        """
+        SNR → betrouwbaarheid. Sterke non-lineaire schaal.
+        - snr < 0.5  → bijna geen vertrouwen
+        - snr = 1.0  → 40% vertrouwen
+        - snr = 2.0  → 67% vertrouwen
+        - snr = 3.0  → 75% vertrouwen
+        """
+        if pd.isna(snr) or snr <= 0:
+            return 0.0
+        return snr / (snr + 1.5)  # sterkere demping dan +1.0
+
+    
+    # SNR → [0,1]
+    rapm_snr_factor = out["RAPM_SNR"].apply(snr_to_conf)
+    xppm_snr_factor = out["xPPM_SNR"].apply(snr_to_conf)
+
+
+    # combineer SNR's (als beide bestaan, anders neem wat er is, anders 0)
+    snr_combined = np.where(
+        out["RAPM_SNR"].notna() & out["xPPM_SNR"].notna(),
+        0.5 * (rapm_snr_factor + xppm_snr_factor),
+        np.where(
+            out["RAPM_SNR"].notna(), rapm_snr_factor,
+            np.where(out["xPPM_SNR"].notna(), xppm_snr_factor, 0.0),
+        ),
+    )
+
+    # totale betrouwbaarheid (0–1)
+    reliability = np.sqrt(minutes_factor * snr_combined)
+    out["Reliability_overall"] = np.round(reliability, 3)
+
+        # -------------------------
+    # StabilityScore (los van Reliability)
+    # Idee: stabiliteit = laag model-onzekerheid (SE) -> hoge score
+    # -------------------------
+    rapm_se_num = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
+    xppm_se_num = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
+
+    # combineer onzekerheid (als 1 ontbreekt: neem de andere)
+    se_combined = np.where(
+        rapm_se_num.notna() & xppm_se_num.notna(),
+        0.5 * (rapm_se_num + xppm_se_num),
+        np.where(rapm_se_num.notna(), rapm_se_num, np.where(xppm_se_num.notna(), xppm_se_num, np.nan)),
+    )
+
+    # Zet SE om naar 0–1 stabiliteit (kleinere SE -> dichter bij 1)
+    # schaalparameter bepaalt strengheid: 1.0 is redelijk, 0.5 is strenger, 2.0 is milder
+    se_scale = 1.0
+    stability = 1.0 / (1.0 + (se_combined / se_scale))
+    out["StabilityScore"] = pd.Series(stability).fillna(0.0).clip(0, 1).round(3)
+
+
+
+    # Impactscore via z-scores
+    rapm_z_vals = pd.to_numeric(out.get("RAPM_z"), errors="coerce").fillna(0.0)
+    xppm_z_vals = pd.to_numeric(out.get("xPPM_z"), errors="coerce").fillna(0.0)
+
+    impact_base = 0.6 * rapm_z_vals + 0.4 * xppm_z_vals
+    out["ImpactScore"] = np.round(impact_base * reliability, 3)
+
+    # =========================
+    # FINAL SCOUTING SCORE (FSS) op speler-out
+    # =========================
+    impact_vals = pd.to_numeric(out.get("ImpactScore"), errors="coerce").fillna(0.0)
+
+    # robust normaliseren via percentielen
+    p10 = float(impact_vals.quantile(0.10))
+    p90 = float(impact_vals.quantile(0.90))
+    denom = (p90 - p10) if (p90 - p10) != 0 else 1.0
+
+    out["Impact_norm"] = ((impact_vals - p10) / denom).clip(0, 1).round(3)
+
+    # minutenfactor: logistiek (900 min ~ kantelpunt)
+    mins = pd.to_numeric(out.get("Speelminuten"), errors="coerce").fillna(0.0)
+    # Minutes_factor (logistische groei) rond percentiel i.p.v. vaste 900
+    mins_series = pd.to_numeric(out["Speelminuten"], errors="coerce").fillna(0.0)
+
+    # Middenpunt: p60 minuten (typische rotatie/basis grens)
+    m = float(mins_series[mins_series > 0].quantile(0.60)) if (mins_series > 0).any() else 0.0
+
+    # Schaal: spreiding tussen p60 en p90 (hoe snel de logistiek stijgt)
+    p90 = float(mins_series[mins_series > 0].quantile(0.90)) if (mins_series > 0).any() else (m + 1.0)
+    s = max((p90 - m) / 2.0, 1.0)  # vermijd 0
+
+    out["Minutes_factor"] = 1 / (1 + np.exp(-(mins_series - m) / s))
+    out["Minutes_factor"] = out["Minutes_factor"].clip(0, 1).round(3)
+
+
+    # Confidence: combineer betrouwbaarheid + stabiliteit + minuten
+    rel = pd.to_numeric(out.get("Reliability_overall"), errors="coerce").fillna(0.0).clip(0, 1)
+    stab = pd.to_numeric(out.get("StabilityScore"), errors="coerce").fillna(0.0).clip(0, 1)
+    mf = pd.to_numeric(out.get("Minutes_factor"), errors="coerce").fillna(0.0).clip(0, 1)
+
+    out["Confidence"] = (np.sqrt(rel * stab) * np.sqrt(mf)).clip(0, 1).round(3)
+
+    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"]).clip(0, 1).round(3)
+
+    # =========================
+    # PERCENTIELEN (voor dynamische filters)
+    # =========================
+    def pct_rank(s: pd.Series):
+        s = pd.to_numeric(s, errors="coerce")
+        # pct=True geeft [0,1] percentielen; fillna 0 voor spelers zonder data
+        return s.rank(pct=True).fillna(0.0)
+
+    out["Min_pct"]        = pct_rank(out["Speelminuten"]).round(3)
+    out["Reliab_pct"]     = pct_rank(out["Reliability_overall"]).round(3)
+    out["Impact_pct"]     = pct_rank(out["ImpactScore"]).round(3)
+    out["FSS_pct"]        = pct_rank(out["FinalScoutingScore"]).round(3)
+
+    # Safe impact percentielen (nieuw)
+    out["RAPM_safe_pct"]  = pct_rank(out["RAPM_safe_per90"]).round(3)
+    out["xPPM_safe_pct"]  = pct_rank(out["xPPM_safe_per90"]).round(3)
+    out["SafeImpact_pct"] = pct_rank(out["SafeImpact_per90"]).round(3)
+
+    # =========================
+    # ROLE HINT (zonder positie)
+    # =========================
+    started = pd.to_numeric(out.get("Gestart"), errors="coerce").fillna(0.0)
+    sub_in  = pd.to_numeric(out.get("Ingevallen"), errors="coerce").fillna(0.0)
+    apps    = pd.to_numeric(out.get("Selecties"), errors="coerce").fillna(0.0)
+
+    start_share = np.divide(started, apps, out=np.zeros_like(started), where=apps > 0)
+    sub_share   = np.divide(sub_in, apps, out=np.zeros_like(sub_in), where=apps > 0)
+
+    # rol op basis van speelminuten-percentiel en start/sub ratio
+    out["Role_hint"] = np.select(
+        [
+            (out["Min_pct"] >= 0.70) & (start_share >= 0.60),
+            (out["Min_pct"] >= 0.40) & (start_share >= 0.35),
+            (sub_share >= 0.50) & (out["Min_pct"] < 0.50),
+            (out["Min_pct"] < 0.20),
+        ],
+        [
+            "Vaste waarde",
+            "Rotatiespeler",
+            "Impact-invaller",
+            "Fringe / beperkte rol",
+        ],
+        default="Onbekend profiel",
+    )
+
+
+    # =========================
+    # EXPLAINABILITY (percentiel-gedreven)
+    # =========================
+
+    # Impact: safe impact is scoutbaar
+    out["Explain_Impact"] = np.select(
+        [
+            out["RAPM_safe_per90"] > 0,
+            out["RAPM_per90"] > 0,
+            out["RAPM_per90"] < 0,
+        ],
+        [
+            "Conservatief positief: zelfs worst-case blijft RAPM > 0",
+            "Positief, maar onzeker: CI kruist 0",
+            "Negatief impactsignaal in deze periode",
+        ],
+        default="Onvoldoende info / geen impactsignaal"
+    )
+
+    # Betrouwbaarheid: gebruik percentiel i.p.v. vaste 0.7
+    out["Explain_Reliability"] = np.select(
+        [
+            out["Reliab_pct"] >= 0.75,
+            out["Reliab_pct"] >= 0.50,
+            out["Reliab_pct"] > 0,
+        ],
+        [
+            "Hoog vertrouwen: veel signaal en/of veel minuten t.o.v. competitie",
+            "Matig vertrouwen: bruikbaar maar context/video check aanbevolen",
+            "Laag vertrouwen: beperkte sample of veel ruis",
+        ],
+        default="Geen betrouwbaarheidsschatting"
+    )
+
+    # Stability: je StabilityScore is eigenlijk 1/(1+SE) → gebruik percentiel
+    out["Explain_Stability"] = np.select(
+        [
+            pct_rank(out["StabilityScore"]) >= 0.75,
+            pct_rank(out["StabilityScore"]) >= 0.50,
+            pct_rank(out["StabilityScore"]) > 0,
+        ],
+        [
+            "Stabiel profiel (relatief lage onzekerheid)",
+            "Gemiddelde stabiliteit",
+            "Volatiel profiel (relatief hoge onzekerheid)",
+        ],
+        default="Geen stabiliteitsinfo"
+    )
+
+    # =========================
+    # PROFIELSAMENVATTING (1 zin)
+    # =========================
+    # “waarom target?” in scout-taal, zonder positie
+
+    # vergelijking RAPM vs xPPM: structuur vs output
+    diff = (pd.to_numeric(out["RAPM_z"], errors="coerce").fillna(0.0)
+            - pd.to_numeric(out["xPPM_z"], errors="coerce").fillna(0.0))
+
+    style = np.select(
+        [diff >= 0.75, diff <= -0.75],
+        ["Meer structurele impact (RAPM gedreven)", "Meer output-gedreven (xPPM gedreven)"],
+        default="Gemengd impactprofiel"
+    )
+
+    out["Profile"] = (
+        out["Role_hint"].astype(str)
+        + " | " + style.astype(str)
+        + " | SafeImpact pctl " + (out["SafeImpact_pct"] * 100).round(0).astype(int).astype(str)
+        + " | Betrouwbaarheid pctl " + (out["Reliab_pct"] * 100).round(0).astype(int).astype(str)
+    )
+
+    # =========================
+    # SHORTLIST FLAGS (rol-presets)
+    # =========================
+
+    # 1) Undervalued impact: hoge safe impact, lagere minuten
+    out["SL_undervalued"] = (
+        (out["SafeImpact_pct"] >= 0.80) &
+        (out["Min_pct"] <= 0.50) &
+        (out["Reliab_pct"] >= 0.50)
+    )
+
+    # 2) Betrouwbare teamverbeteraar: hoge safe impact + hoge betrouwbaarheid
+    out["SL_reliable"] = (
+        (out["SafeImpact_pct"] >= 0.75) &
+        (out["Reliab_pct"] >= 0.75) &
+        (out["Min_pct"] >= 0.60)
+    )
+
+    # 3) High ceiling / high risk: extreme RAPM, maar onzeker (safe niet positief)
+    out["SL_high_ceiling"] = (
+        (pct_rank(out["RAPM_per90"]) >= 0.90) &
+        (out["RAPM_safe_per90"] <= 0) &
+        (out["Min_pct"] <= 0.50)
+    )
+
+    # 4) Output merchant: hoge xPPM, maar RAPM niet mee
+    out["SL_output_only"] = (
+        (out["xPPM_safe_pct"] >= 0.80) &
+        (out["RAPM_safe_pct"] <= 0.50)
+    )
+
+
+    # ====== RAPM R² (overall + per speeldag) ======
+
+    # n_seg & n_pl opnieuw bepalen op basis van seg_df en rapm_tot
+    if seg_df is not None and not seg_df.empty:
+        n_seg = len(seg_df)
+        all_players_list = list(rapm_tot.index)
+        idx_map = {p: i for i, p in enumerate(all_players_list)}
+        n_pl = len(all_players_list)
+        intercept_idx = n_pl
+    else:
+        n_seg = 0
+        n_pl = 0
+
+    rapm_r2_overall = None
+
+    try:
+        X_tot = np.zeros((n_seg, n_pl + 1), dtype=float)
+        y_tot = np.zeros(n_seg, dtype=float)
+        w_tot = np.zeros(n_seg, dtype=float)
+
+        for i, row in seg_df.iterrows():
+            dur = float(row.get("duration", 0.0)) or 1.0
+            if dur <= 0:
+                dur = 1.0
+
+            gf = float(row.get("gf", 0.0))
+            ga = float(row.get("ga", 0.0))
+
+            y_tot[i] = (gf - ga) / dur
+            w_tot[i] = dur
+
+            for p in row["home_players"]:
+                j = idx_map.get(p)
+                if j is not None:
+                    X_tot[i, j] += 1.0
+            for p in row["away_players"]:
+                j = idx_map.get(p)
+                if j is not None:
+                    X_tot[i, j] -= 1.0
+
+            X_tot[i, intercept_idx] = 1.0
+
+        model_tot = Ridge(alpha=80.0, fit_intercept=False)
+        model_tot.fit(X_tot, y_tot, sample_weight=w_tot)
+        y_hat = model_tot.predict(X_tot)
+
+        if w_tot.sum() > 0:
+            y_bar = np.average(y_tot, weights=w_tot)
+        else:
+            y_bar = float(y_tot.mean()) if len(y_tot) else 0.0
+
+        ss_tot = np.sum(w_tot * (y_tot - y_bar) ** 2)
+        ss_res = np.sum(w_tot * (y_tot - y_hat) ** 2)
+        rapm_r2_overall = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        # ---------- R² per speeldag ----------
+        r2_by_round = []
+
+        if "match" in seg_df.columns:
+            match_ids = seg_df["match"].tolist()
+        else:
+            match_ids = None
+
+        if match_ids:
+            boundaries = []
+            last_id = match_ids[0]
+            for idx, mid in enumerate(match_ids, start=1):
+                if mid != last_id:
+                    boundaries.append(idx - 1)
+                    last_id = mid
+            boundaries.append(len(match_ids))
+
+            for round_idx, end_idx in enumerate(boundaries, start=1):
+                n_used = end_idx
+                if n_used < 10:
+                    continue
+
+                X_sub = X_tot[:n_used]
+                y_sub = y_tot[:n_used]
+                w_sub = w_tot[:n_used]
+
+                model_sub = Ridge(alpha=80.0, fit_intercept=False)
+                model_sub.fit(X_sub, y_sub, sample_weight=w_sub)
+                y_hat_sub = model_sub.predict(X_sub)
+
+                if w_sub.sum() > 0:
+                    y_bar_sub = np.average(y_sub, weights=w_sub)
+                else:
+                    y_bar_sub = float(y_sub.mean()) if len(y_sub) else 0.0
+
+                ss_tot_sub = np.sum(w_sub * (y_sub - y_bar_sub) ** 2)
+                ss_res_sub = np.sum(w_sub * (y_sub - y_hat_sub) ** 2)
+                r2_val = float(1 - ss_res_sub / ss_tot_sub) if ss_tot_sub > 0 else 0.0
+
+                r2_by_round.append({
+                    "round": int(round_idx),
+                    "segments": int(n_used),
+                    "R2": r2_val,
+                })
+
+        if rapm_r2_overall is not None:
+            out["RAPM_R2_overall"] = rapm_r2_overall
+
+        if len(r2_by_round) > 0:
+            out["RAPM_R2_by_round"] = json.dumps(r2_by_round, ensure_ascii=False)
+
+    except Exception as e:
+        print(f"[WARN] kon RAPM_R2_overall niet berekenen: {e}")
+
+
 
     # 6) wegschrijven
     out.to_csv(OUTPUT_PATH, index=False, encoding="utf8")
     print(f"Saved: {OUTPUT_PATH}")
 
+
+
+# --------------------------------------------------------------------
+# NEW: build a player stats dataframe from arbitrary subsets (for history)
+# --------------------------------------------------------------------
+def _to_bool_series(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.lower().isin(["true", "1", "yes"])
+
+def _compute_scouting_scores(out: pd.DataFrame) -> pd.DataFrame:
+    """Compute the minimal set of scouting columns used by the dashboard:
+    ImpactScore, Confidence, FinalScoutingScore (+ supporting cols).
+    This mirrors the season-level logic but is safe for partial-season snapshots.
+    """
+    out = out.copy()
+
+    # Ensure numerics exist
+    for c in [
+        "Speelminuten",
+        "RAPM_per90","RAPM_SE_per90","RAPM_CI_low","RAPM_CI_high","RAPM_z",
+        "xPPM_per90","xPPM_SE","xPPM_CI_low","xPPM_CI_high","xPPM_z",
+    ]:
+        if c not in out.columns:
+            out[c] = 0.0
+
+    # SAFE impact (conservative bound)
+    mins_series = pd.to_numeric(out.get("Speelminuten"), errors="coerce").fillna(0.0)
+
+    rapm = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0)
+    rapm_ci_low = pd.to_numeric(out.get("RAPM_CI_low"), errors="coerce").fillna(0.0)
+    rapm_ci_high = pd.to_numeric(out.get("RAPM_CI_high"), errors="coerce").fillna(0.0)
+
+    xppm = pd.to_numeric(out.get("xPPM_per90"), errors="coerce").fillna(0.0)
+    xppm_ci_low = pd.to_numeric(out.get("xPPM_CI_low"), errors="coerce").fillna(0.0)
+    xppm_ci_high = pd.to_numeric(out.get("xPPM_CI_high"), errors="coerce").fillna(0.0)
+
+    out["RAPM_safe_per90"] = np.where(rapm >= 0, rapm_ci_low, rapm_ci_high)
+    out["xPPM_safe_per90"] = np.where(xppm >= 0, xppm_ci_low, xppm_ci_high)
+    out["SafeImpact_per90"] = (out["RAPM_safe_per90"] + out["xPPM_safe_per90"])
+
+    # SNR
+    rapm_se = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
+    xppm_se = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
+
+    out["RAPM_SNR"] = (rapm.abs() / rapm_se).replace([np.inf, -np.inf], np.nan)
+    out["xPPM_SNR"] = (xppm.abs() / xppm_se).replace([np.inf, -np.inf], np.nan)
+
+    # Minutes factor (dynamic, based on pct within snapshot)
+    mins_ref = float(mins_series[mins_series > 0].quantile(0.80)) if (mins_series > 0).any() else 1.0
+    mins_ref = max(mins_ref, 1.0)
+    minutes_factor_linear = np.clip(mins_series / mins_ref, 0, 1)
+
+    def snr_to_conf(snr):
+        if pd.isna(snr) or snr <= 0:
+            return 0.0
+        return float(snr / (snr + 1.5))
+
+    rapm_snr_factor = out["RAPM_SNR"].apply(snr_to_conf)
+    xppm_snr_factor = out["xPPM_SNR"].apply(snr_to_conf)
+
+    snr_combined = np.where(
+        out["RAPM_SNR"].notna() & out["xPPM_SNR"].notna(),
+        0.5 * (rapm_snr_factor + xppm_snr_factor),
+        np.where(out["RAPM_SNR"].notna(), rapm_snr_factor, np.where(out["xPPM_SNR"].notna(), xppm_snr_factor, 0.0)),
+    )
+
+    reliability = np.sqrt(minutes_factor_linear * snr_combined)
+    out["Reliability_overall"] = np.round(pd.Series(reliability).fillna(0.0).clip(0, 1), 3)
+
+    # Stability (low SE -> high)
+    se_combined = np.where(
+        pd.Series(rapm_se).notna() & pd.Series(xppm_se).notna(),
+        0.5 * (pd.Series(rapm_se).fillna(np.nan) + pd.Series(xppm_se).fillna(np.nan)),
+        np.where(pd.Series(rapm_se).notna(), pd.Series(rapm_se), np.where(pd.Series(xppm_se).notna(), pd.Series(xppm_se), np.nan)),
+    )
+    se_scale = 1.0
+    stability = 1.0 / (1.0 + (pd.Series(se_combined) / se_scale))
+    out["StabilityScore"] = np.round(pd.Series(stability).fillna(0.0).clip(0, 1), 3)
+
+    # ImpactScore (z-based, weighted by reliability)
+    rapm_z_vals = pd.to_numeric(out.get("RAPM_z"), errors="coerce").fillna(0.0)
+    xppm_z_vals = pd.to_numeric(out.get("xPPM_z"), errors="coerce").fillna(0.0)
+    impact_base = 0.6 * rapm_z_vals + 0.4 * xppm_z_vals
+    out["ImpactScore"] = np.round(impact_base * out["Reliability_overall"], 3)
+
+    # Robust normalization inside snapshot
+    impact_vals = pd.to_numeric(out.get("ImpactScore"), errors="coerce").fillna(0.0)
+    p10 = float(impact_vals.quantile(0.10))
+    p90 = float(impact_vals.quantile(0.90))
+    denom = (p90 - p10) if (p90 - p10) != 0 else 1.0
+    out["Impact_norm"] = ((impact_vals - p10) / denom).clip(0, 1).round(3)
+
+    # Logistic minutes factor, centered at snapshot p60
+    m = float(mins_series[mins_series > 0].quantile(0.60)) if (mins_series > 0).any() else 0.0
+    p90m = float(mins_series[mins_series > 0].quantile(0.90)) if (mins_series > 0).any() else (m + 1.0)
+    s = max((p90m - m) / 2.0, 1.0)
+    out["Minutes_factor"] = (1 / (1 + np.exp(-(mins_series - m) / s))).clip(0, 1).round(3)
+
+    rel = pd.to_numeric(out.get("Reliability_overall"), errors="coerce").fillna(0.0).clip(0, 1)
+    stab = pd.to_numeric(out.get("StabilityScore"), errors="coerce").fillna(0.0).clip(0, 1)
+    mf = pd.to_numeric(out.get("Minutes_factor"), errors="coerce").fillna(0.0).clip(0, 1)
+    out["Confidence"] = (np.sqrt(rel * stab) * np.sqrt(mf)).clip(0, 1).round(3)
+
+    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"]).clip(0, 1).round(3)
+    return out
+
+def build_player_stats_df(player_match_df: pd.DataFrame, match_events_df: pd.DataFrame, calendar_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Build a player stats DataFrame for a given subset of matches.
+    Intended for per-round snapshots for history export.
+    """
+    df = player_match_df.copy()
+
+    # booleans
+    for col in ["Starting Player", "Substituted In", "Substituted Out", "Is Goalkeeper", "Is Captain", "Clean Sheet"]:
+        if col in df.columns:
+            df[col] = _to_bool_series(df[col])
+        else:
+            df[col] = False
+
+    # numerics
+    num_cols = ["Minutes Played","Goals Scored","Penalties Scored","Own Goals Scored","Yellow Cards","YellowRed Cards","Red Cards","Result P"]
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
+
+    # date merge
+    if calendar_df is None:
+        cal = load_calendar()
+    else:
+        cal = calendar_df.copy()
+    if "url" in cal.columns:
+        df = df.merge(cal, left_on="Match URL", right_on="url", how="left")
+    df["date"] = pd.to_datetime(df.get("date"))
+
+    records = []
+    for (team, player), g in df.groupby(["Team", "Player Name"]):
+        g = g.sort_values("date")
+        if not team or not player:
+            continue
+
+        minutes = int(g["Minutes Played"].fillna(0).sum())
+        goals = int(g["Goals Scored"].fillna(0).sum())
+        yellow = int(g["Yellow Cards"].fillna(0).sum())
+        started = int(g["Starting Player"].sum())
+        sub_in = int(g["Substituted In"].sum())
+        sub_out = int(g["Substituted Out"].sum())
+
+        sel = len(g)
+        pens = int(g["Penalties Scored"].fillna(0).sum())
+        og = int(g["Own Goals Scored"].fillna(0).sum())
+        y2 = int(g["YellowRed Cards"].fillna(0).sum())
+        red = int(g["Red Cards"].fillna(0).sum())
+        clean_sheets = int(g["Clean Sheet"].astype(int).sum())
+        captain = int(g["Is Captain"].astype(int).sum())
+        ptype = "Keeper" if g["Is Goalkeeper"].any() else "Speler"
+
+        if minutes > 0:
+            goals90 = round(goals / (minutes / 90.0), 3)
+            yellow90 = round(yellow / (minutes / 90.0), 3)
+        else:
+            goals90 = 0.0
+            yellow90 = 0.0
+
+        records.append({
+            "Team": team,
+            "Speler": player,
+            "Selecties": sel,
+            "Gestart": started,
+            "Ingevallen": sub_in,
+            "Vervangen": sub_out,
+            "Speelminuten": minutes,
+            "Goals": goals,
+            "Penalties": pens,
+            "Own Goals": og,
+            "Geel": yellow,
+            "Dubbelgeel": y2,
+            "Rood": red,
+            "Clean sheets": clean_sheets,
+            "Kapitein": captain,
+            "Type": ptype,
+            "Goals/90min": goals90,
+            "Geel/90min": yellow90,
+        })
+
+    out = pd.DataFrame(records)
+    if out.empty:
+        return out
+
+    # RAPM / xPPM on subset
+    try:
+        rapm_dict = compute_rapm_from_logs(df, match_events_df, split_off_def=True, return_segments=False)
+        rapm_tot = rapm_dict.get("total", pd.Series(dtype=float))
+        rapm_off = rapm_dict.get("off", pd.Series(dtype=float))
+        rapm_def = rapm_dict.get("def", pd.Series(dtype=float))
+        rapm_se = rapm_dict.get("total_se", pd.Series(dtype=float))
+        rapm_ci_low = rapm_dict.get("total_ci_low", pd.Series(dtype=float))
+        rapm_ci_high = rapm_dict.get("total_ci_high", pd.Series(dtype=float))
+        rapm_z = rapm_dict.get("total_z", pd.Series(dtype=float))
+    except Exception as e:
+        print(f"[WARN] subset RAPM failed: {e}")
+        rapm_tot = pd.Series(dtype=float)
+        rapm_off = pd.Series(dtype=float)
+        rapm_def = pd.Series(dtype=float)
+        rapm_se = pd.Series(dtype=float)
+        rapm_ci_low = pd.Series(dtype=float)
+        rapm_ci_high = pd.Series(dtype=float)
+        rapm_z = pd.Series(dtype=float)
+
+    # xPPM needs segments; we can get them by recomputing with return_segments
+    try:
+        rapm_dict2, seg_df = compute_rapm_from_logs(df, match_events_df, split_off_def=True, return_segments=True)
+        xppm_dict, _ = compute_xppm_from_segments(seg_df)
+        xppm_val = xppm_dict.get("xppm", pd.Series(dtype=float))
+        xppm_se = xppm_dict.get("se", pd.Series(dtype=float))
+        xppm_ci_low = xppm_dict.get("ci_low", pd.Series(dtype=float))
+        xppm_ci_high = xppm_dict.get("ci_high", pd.Series(dtype=float))
+        xppm_z = xppm_dict.get("z", pd.Series(dtype=float))
+    except Exception as e:
+        print(f"[WARN] subset xPPM failed: {e}")
+        xppm_val = pd.Series(dtype=float)
+        xppm_se = pd.Series(dtype=float)
+        xppm_ci_low = pd.Series(dtype=float)
+        xppm_ci_high = pd.Series(dtype=float)
+        xppm_z = pd.Series(dtype=float)
+
+    out["RAPM_per90"] = out["Speler"].map(rapm_tot).fillna(0.0).round(3)
+    out["RAPM_off_per90"] = out["Speler"].map(rapm_off).fillna(0.0).round(3)
+    out["RAPM_def_per90"] = out["Speler"].map(rapm_def).fillna(0.0).round(3)
+    out["RAPM_SE_per90"] = out["Speler"].map(rapm_se).fillna(0.0).round(3)
+    out["RAPM_CI_low"] = out["Speler"].map(rapm_ci_low).fillna(0.0).round(3)
+    out["RAPM_CI_high"] = out["Speler"].map(rapm_ci_high).fillna(0.0).round(3)
+    out["RAPM_z"] = out["Speler"].map(rapm_z).fillna(0.0).round(2)
+
+    out["xPPM_per90"] = out["Speler"].map(xppm_val).fillna(0.0).round(3)
+    out["xPPM_SE"] = out["Speler"].map(xppm_se).fillna(0.0).round(3)
+    out["xPPM_CI_low"] = out["Speler"].map(xppm_ci_low).fillna(0.0).round(3)
+    out["xPPM_CI_high"] = out["Speler"].map(xppm_ci_high).fillna(0.0).round(3)
+    out["xPPM_z"] = out["Speler"].map(xppm_z).fillna(0.0).round(2)
+
+    out = _compute_scouting_scores(out)
+    return out
 
 if __name__ == "__main__":
     build_player_stats()

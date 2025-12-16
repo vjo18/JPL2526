@@ -10,7 +10,6 @@
     "lint": "eslint .",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
-
     "scrape:calendar": "node scrapers/scrape_calendar.cjs",
     "scrape:events": "node scrapers/scrape_match_events.cjs",
     "scrape:players": "node scrapers/scrape_player_data.cjs",
@@ -21,6 +20,7 @@
     "puppeteer": "^24.30.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-router-dom": "^7.10.1",
     "recharts": "^3.2.1"
   },
   "devDependencies": {

@@ -12,7 +12,7 @@ const puppeteer = require("puppeteer");
   const page = await browser.newPage();
 
   await page.goto(
-    "https://www.rbfa.be/nl/competitie/CHP_123326/kalender",
+    "https://www.rbfa.be/nl/competitie/CHP_126213/kalender",
     { waitUntil: "networkidle0" }
   );
 
