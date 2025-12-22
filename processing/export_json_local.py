@@ -792,7 +792,6 @@ def export_player_stats_all(xfile: str, dst: Path):
         "xPPM_z": "xPPM_z",
         # 🔽 NIEUW: scouting-metrics
         "RAPM_SNR": "RAPM_SNR",
-        "xPPM_SNR": "xPPM_SNR",
         "Reliability_overall": "Reliability_overall",
         "ImpactScore": "ImpactScore",
         "StabilityScore": "StabilityScore",
@@ -860,7 +859,6 @@ def export_player_stats_all(xfile: str, dst: Path):
         "xPPM_z",
         # 🔽 NIEUW: scouting-metrics
         "RAPM_SNR",
-        "xPPM_SNR",
         "Reliability_overall",
         "ImpactScore",
         # 🔽 NIEUW

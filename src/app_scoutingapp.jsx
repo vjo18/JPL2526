@@ -21,10 +21,24 @@ const DEFAULTS = {
   profileImpactPctElite: 85,
   profileImpactPctUpside: 85,
   profileImpactPctReliable: 60,
-  profileConfPctElite: 60,
-  profileConfPctReliable: 75,
-  profileConfPctHighRisk: 35,
+  //profileConfPctElite: 60,
+  //profileConfPctReliable: 75,
+  //profileConfPctHighRisk: 35,
+  // Confidence = absolute thresholds (coach-proof)
+  confEliteAbs: 0.28,
+  confReliableAbs: 0.28,
+  confHighRiskAbs: 0.12,
 };
+
+const RAPM_INFO = {
+  title: "RAPM_safe Impact (per 90)",
+  lines: [
+    "Positief = zelfs conservatief (worst-case) blijft RAPM > 0 in goal difference per 90 (gecorrigeerd voor context).",
+    "Negatief = conservatief onder 0 (niet automatisch ‘slechte speler’).",
+    "Hoe hoger Confidence, hoe sterker het signaal."
+  ],
+};
+
 
 // --- Profile pill colors (gebruik overal dezelfde visual) ---
 const profilePillBase = {
@@ -101,7 +115,8 @@ function normalizePlayerRow(row) {
   const mins = toNum(row.Speelminuten ?? row.Minutes ?? row.Mins ?? 0, 0);
 
   const fss = toNum(row.FinalScoutingScore ?? row.FSS ?? row.finalScore, NaN);
-  const impact = toNum(row.ImpactScore ?? row.Impact ?? row.impactScore, NaN);
+  //const impact = toNum(row.ImpactScore ?? row.Impact ?? row.impactScore, NaN);
+  const impact = toNum(row.RAPM_per90 ?? row.RAPM ?? row.ImpactScore ?? row.Impact ?? row.impactScore,NaN);
   const conf = toNum(row.Confidence ?? row.confidence, NaN);
   const stability = toNum(row.StabilityScore ?? row.Stability ?? row.stabilityScore, NaN);
 
@@ -141,9 +156,13 @@ function computeCutoffs(players, cfg) {
     impactElite: percentileCutoff(impacts, cfg.profileImpactPctElite),
     impactUpside: percentileCutoff(impacts, cfg.profileImpactPctUpside),
     impactReliable: percentileCutoff(impacts, cfg.profileImpactPctReliable),
-    confElite: percentileCutoff(confs, cfg.profileConfPctElite),
-    confReliable: percentileCutoff(confs, cfg.profileConfPctReliable),
-    confHighRisk: percentileCutoff(confs, cfg.profileConfPctHighRisk),
+    //confElite: percentileCutoff(confs, cfg.profileConfPctElite),
+    //confReliable: percentileCutoff(confs, cfg.profileConfPctReliable),
+    //confHighRisk: percentileCutoff(confs, cfg.profileConfPctHighRisk),
+    // absolute confidence cutoffs
+    confElite: cfg.confEliteAbs,
+    confReliable: cfg.confReliableAbs,
+    confHighRisk: cfg.confHighRiskAbs,
   };
 }
 
@@ -224,7 +243,8 @@ function normalizeHistoryRow(h) {
   const round = toNum(h.Round ?? h.Speelronde ?? h.Matchweek ?? h.GW ?? h.ronde, NaN);
   const mins = toNum(h.Speelminuten ?? h.Minutes ?? h.Mins ?? 0, 0);
   const fss = toNum(h.FinalScoutingScore ?? h.FSS ?? h.finalScore, NaN);
-  const impact = toNum(h.ImpactScore ?? h.Impact ?? h.impactScore, NaN);
+  //const impact = toNum(h.ImpactScore ?? h.Impact ?? h.impactScore, NaN);
+  const impact = toNum(h.RAPM_per90 ?? h.RAPM ?? h.ImpactScore ?? h.Impact ?? h.impactScore,NaN);
   const conf = toNum(h.Confidence ?? h.confidence, NaN);
   return { ...h, _round: round, _mins: mins, _fss: fss, _impact: impact, _conf: conf };
 }
@@ -555,7 +575,7 @@ export default function App() {
         desc: "Directe versterking: top impact + voldoende zekerheid.",
         lines: [
           `ImpactScore ≥ ${fmt(cutoffs.impactElite, 2)} (P${cfg.profileImpactPctElite})`,
-          `Confidence ≥ ${fmt(cutoffs.confElite, 2)} (P${cfg.profileConfPctElite})`,
+          `Confidence ≥ ${fmt(cutoffs.confElite, 2)}`,
         ],
       },
       {
@@ -563,7 +583,7 @@ export default function App() {
         desc: "Top impact, maar lagere zekerheid: groeiprofiel / buy early.",
         lines: [
           `ImpactScore ≥ ${fmt(cutoffs.impactUpside, 2)} (P${cfg.profileImpactPctUpside})`,
-          `Confidence < ${fmt(cutoffs.confElite, 2)} (P${cfg.profileConfPctElite})`,
+          `Confidence < ${fmt(cutoffs.confElite, 2)}`,
         ],
       },
       {
@@ -571,13 +591,13 @@ export default function App() {
         desc: "Goede impact met hoge betrouwbaarheid (hoge floor).",
         lines: [
           `ImpactScore ≥ ${fmt(cutoffs.impactReliable, 2)} (P${cfg.profileImpactPctReliable})`,
-          `Confidence ≥ ${fmt(cutoffs.confReliable, 2)} (P${cfg.profileConfPctReliable})`,
+          `Confidence ≥ ${fmt(cutoffs.confReliable, 2)}`,
         ],
       },
       {
         title: "High risk",
         desc: "Grotere foutmarge: lage zekerheid/instabiliteit (extra context nodig).",
-        lines: [`Confidence ≤ ${fmt(cutoffs.confHighRisk, 2)} (P${cfg.profileConfPctHighRisk})`],
+        lines: [`Confidence ≤ ${fmt(cutoffs.confHighRisk, 2)}`],
       },
     ];
   }, [cutoffs, cfg]);
@@ -707,8 +727,37 @@ export default function App() {
                 FSS
               </th>
               <th style={thCenter} onClick={() => toggleSort("_impact")}>
-                Impact
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  RAPM Impact
+                  <HoverCard
+                    trigger={
+                      <span
+                        onClick={(e) => e.stopPropagation()} // voorkomt sort-click
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 16,
+                          height: 16,
+                          borderRadius: 999,
+                          border: "1px solid #ddd",
+                          fontSize: 11,
+                          fontWeight: 800,
+                          cursor: "help",
+                          userSelect: "none",
+                        }}
+                        aria-label="Info over RAPM Impact"
+                      >
+                        i
+                      </span>
+                    }
+                  >
+                    <div style={{fontSize: 12, fontWeight: 500, marginBottom: 8, lineHeight: 1.4, }}>  {RAPM_INFO.title}</div>
+                    <div style={{fontSize: 12, lineHeight: 1.5, maxWidth: 260, }}> {RAPM_INFO.lines.map((t) => ( <div key={t} style={{ marginBottom: 6 }}> • {t} </div> ))}</div>
+                  </HoverCard>
+                </span>
               </th>
+
               <th style={thCenter} onClick={() => toggleSort("_conf")}>
                 Conf
               </th>
@@ -958,7 +1007,7 @@ const styles = {
     top: "100%",
     marginTop: 8,
     zIndex: 50,
-    width: 360,
+    width: 660,
     background: "white",
     border: "1px solid #eee",
     borderRadius: 10,

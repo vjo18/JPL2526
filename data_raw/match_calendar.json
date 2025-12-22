@@ -1155,65 +1155,65 @@
     "url": "https://www.rbfa.be/nl/wedstrijd/7188014",
     "date": "VRIJDAG, 19 DECEMBER 2025",
     "homeTeam": "SP du Pays de Charleroi A",
-    "homeScore": null,
+    "homeScore": "2",
     "awayTeam": "K.RC.Genk A",
-    "awayScore": null
+    "awayScore": "2"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188015",
     "date": "ZATERDAG, 20 DECEMBER 2025",
     "homeTeam": "FC.V.Dender E.H.",
-    "homeScore": null,
+    "homeScore": "0",
     "awayTeam": "R.Standard de Liège A",
-    "awayScore": null
+    "awayScore": "1"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188013",
     "date": "ZATERDAG, 20 DECEMBER 2025",
     "homeTeam": "K.VC.Westerlo A",
-    "homeScore": null,
+    "homeScore": "2",
     "awayTeam": "RAAL La Louviere A",
-    "awayScore": null
+    "awayScore": "1"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188009",
     "date": "ZATERDAG, 20 DECEMBER 2025",
     "homeTeam": "R.Union St.-Gilloise A",
-    "homeScore": null,
+    "homeScore": "2",
     "awayTeam": "SV.Zulte Waregem A",
-    "awayScore": null
+    "awayScore": "0"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188008",
     "date": "ZONDAG, 21 DECEMBER 2025",
     "homeTeam": "Club Brugge KV. A",
-    "homeScore": null,
+    "homeScore": "2",
     "awayTeam": "K.AA.Gent A",
-    "awayScore": null
+    "awayScore": "1"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188012",
     "date": "ZONDAG, 21 DECEMBER 2025",
     "homeTeam": "K.St.-Truidense VV. A",
-    "homeScore": null,
+    "homeScore": "1",
     "awayTeam": "Yellow-Red KV.Mechelen A",
-    "awayScore": null
+    "awayScore": "0"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188010",
     "date": "ZONDAG, 21 DECEMBER 2025",
     "homeTeam": "R.Antwerp F.C. A",
-    "homeScore": null,
+    "homeScore": "2",
     "awayTeam": "R.SC.Anderlecht A",
-    "awayScore": null
+    "awayScore": "2"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188011",
     "date": "ZONDAG, 21 DECEMBER 2025",
     "homeTeam": "Oud-Heverlee Leuven A",
-    "homeScore": null,
+    "homeScore": "0",
     "awayTeam": "Cercle Brugge K.SV. A",
-    "awayScore": null
+    "awayScore": "2"
   },
   {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188017",
@@ -1344,6 +1344,14 @@
     "awayScore": null
   },
   {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188038",
+    "date": "ZONDAG, 25 JANUARI 2026",
+    "homeTeam": "Oud-Heverlee Leuven A",
+    "homeScore": null,
+    "awayTeam": "R.Union St.-Gilloise A",
+    "awayScore": null
+  },
+  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188032",
     "date": "ZONDAG, 25 JANUARI 2026",
     "homeTeam": "Club Brugge KV. A",
@@ -1365,14 +1373,6 @@
     "homeTeam": "RAAL La Louviere A",
     "homeScore": null,
     "awayTeam": "K.St.-Truidense VV. A",
-    "awayScore": null
-  },
-  {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188038",
-    "date": "ZONDAG, 25 JANUARI 2026",
-    "homeTeam": "Oud-Heverlee Leuven A",
-    "homeScore": null,
-    "awayTeam": "R.Union St.-Gilloise A",
     "awayScore": null
   },
   {
@@ -1408,19 +1408,19 @@
     "awayScore": null
   },
   {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188042",
-    "date": "ZONDAG, 1 FEBRUARI 2026",
-    "homeTeam": "RAAL La Louviere A",
-    "homeScore": null,
-    "awayTeam": "K.AA.Gent A",
-    "awayScore": null
-  },
-  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188041",
     "date": "ZONDAG, 1 FEBRUARI 2026",
     "homeTeam": "R.Standard de Liège A",
     "homeScore": null,
     "awayTeam": "R.SC.Anderlecht A",
+    "awayScore": null
+  },
+  {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188042",
+    "date": "ZONDAG, 1 FEBRUARI 2026",
+    "homeTeam": "RAAL La Louviere A",
+    "homeScore": null,
+    "awayTeam": "K.AA.Gent A",
     "awayScore": null
   },
   {
@@ -1472,6 +1472,14 @@
     "awayScore": null
   },
   {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188053",
+    "date": "ZONDAG, 8 FEBRUARI 2026",
+    "homeTeam": "Yellow-Red KV.Mechelen A",
+    "homeScore": null,
+    "awayTeam": "R.Antwerp F.C. A",
+    "awayScore": null
+  },
+  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188052",
     "date": "ZONDAG, 8 FEBRUARI 2026",
     "homeTeam": "SV.Zulte Waregem A",
@@ -1512,14 +1520,6 @@
     "awayScore": null
   },
   {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188053",
-    "date": "ZONDAG, 8 FEBRUARI 2026",
-    "homeTeam": "Yellow-Red KV.Mechelen A",
-    "homeScore": null,
-    "awayTeam": "R.Antwerp F.C. A",
-    "awayScore": null
-  },
-  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188049",
     "date": "ZONDAG, 8 FEBRUARI 2026",
     "homeTeam": "R.Union St.-Gilloise A",
@@ -1536,14 +1536,6 @@
     "awayScore": null
   },
   {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188058",
-    "date": "ZONDAG, 15 FEBRUARI 2026",
-    "homeTeam": "R.Standard de Liège A",
-    "homeScore": null,
-    "awayTeam": "R.Union St.-Gilloise A",
-    "awayScore": null
-  },
-  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188063",
     "date": "ZONDAG, 15 FEBRUARI 2026",
     "homeTeam": "SP du Pays de Charleroi A",
@@ -1557,6 +1549,14 @@
     "homeTeam": "R.Antwerp F.C. A",
     "homeScore": null,
     "awayTeam": "K.VC.Westerlo A",
+    "awayScore": null
+  },
+  {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188058",
+    "date": "ZONDAG, 15 FEBRUARI 2026",
+    "homeTeam": "R.Standard de Liège A",
+    "homeScore": null,
+    "awayTeam": "R.Union St.-Gilloise A",
     "awayScore": null
   },
   {
@@ -1600,14 +1600,6 @@
     "awayScore": null
   },
   {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188069",
-    "date": "ZONDAG, 22 FEBRUARI 2026",
-    "homeTeam": "SV.Zulte Waregem A",
-    "homeScore": null,
-    "awayTeam": "R.SC.Anderlecht A",
-    "awayScore": null
-  },
-  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188071",
     "date": "ZONDAG, 22 FEBRUARI 2026",
     "homeTeam": "FC.V.Dender E.H.",
@@ -1621,6 +1613,14 @@
     "homeTeam": "R.Union St.-Gilloise A",
     "homeScore": null,
     "awayTeam": "R.Antwerp F.C. A",
+    "awayScore": null
+  },
+  {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188069",
+    "date": "ZONDAG, 22 FEBRUARI 2026",
+    "homeTeam": "SV.Zulte Waregem A",
+    "homeScore": null,
+    "awayTeam": "R.SC.Anderlecht A",
     "awayScore": null
   },
   {
@@ -1664,14 +1664,6 @@
     "awayScore": null
   },
   {
-    "url": "https://www.rbfa.be/nl/wedstrijd/7188078",
-    "date": "ZONDAG, 1 MAART 2026",
-    "homeTeam": "K.VC.Westerlo A",
-    "homeScore": null,
-    "awayTeam": "R.Union St.-Gilloise A",
-    "awayScore": null
-  },
-  {
     "url": "https://www.rbfa.be/nl/wedstrijd/7188077",
     "date": "ZONDAG, 1 MAART 2026",
     "homeTeam": "Yellow-Red KV.Mechelen A",
@@ -1685,6 +1677,14 @@
     "homeTeam": "R.SC.Anderlecht A",
     "homeScore": null,
     "awayTeam": "Oud-Heverlee Leuven A",
+    "awayScore": null
+  },
+  {
+    "url": "https://www.rbfa.be/nl/wedstrijd/7188078",
+    "date": "ZONDAG, 1 MAART 2026",
+    "homeTeam": "K.VC.Westerlo A",
+    "homeScore": null,
+    "awayTeam": "R.Union St.-Gilloise A",
     "awayScore": null
   },
   {

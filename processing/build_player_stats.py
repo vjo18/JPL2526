@@ -1102,6 +1102,19 @@ def build_player_stats():
     out["RAPM_SNR"] = (rapm.abs() / rapm_se).replace([np.inf, -np.inf], np.nan).round(3)
     out["xPPM_SNR"] = (xppm.abs() / xppm_se).replace([np.inf, -np.inf], np.nan).round(3)
 
+    # Minutes series (voor minutenfactor & confidence)
+    mins_series = pd.to_numeric(
+        out.get("Speelminuten", out.get("Minutes Played", 0.0)),
+        errors="coerce"
+    ).fillna(0.0)
+
+    # --- minutes (robust) ---
+    mins_series = pd.to_numeric(
+        out.get("Speelminuten", out.get("Minutes Played", 0.0)),
+        errors="coerce"
+    ).fillna(0.0)
+
+
     # Minutenfactor op basis van percentiel (dynamisch doorheen seizoen)
     # Neem bv. p80 als "ongeveer vaste basisspeler" referentie
     mins_ref = float(mins[mins > 0].quantile(0.80)) if (mins > 0).any() else 1.0
@@ -1128,14 +1141,7 @@ def build_player_stats():
 
 
     # combineer SNR's (als beide bestaan, anders neem wat er is, anders 0)
-    snr_combined = np.where(
-        out["RAPM_SNR"].notna() & out["xPPM_SNR"].notna(),
-        0.5 * (rapm_snr_factor + xppm_snr_factor),
-        np.where(
-            out["RAPM_SNR"].notna(), rapm_snr_factor,
-            np.where(out["xPPM_SNR"].notna(), xppm_snr_factor, 0.0),
-        ),
-    )
+    snr_combined = np.where(out["RAPM_SNR"].notna(), rapm_snr_factor, 0.0)
 
     # totale betrouwbaarheid (0–1)
     reliability = np.sqrt(minutes_factor * snr_combined)
@@ -1149,11 +1155,8 @@ def build_player_stats():
     xppm_se_num = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
 
     # combineer onzekerheid (als 1 ontbreekt: neem de andere)
-    se_combined = np.where(
-        rapm_se_num.notna() & xppm_se_num.notna(),
-        0.5 * (rapm_se_num + xppm_se_num),
-        np.where(rapm_se_num.notna(), rapm_se_num, np.where(xppm_se_num.notna(), xppm_se_num, np.nan)),
-    )
+    se_combined = rapm_se_num
+
 
     # Zet SE om naar 0–1 stabiliteit (kleinere SE -> dichter bij 1)
     # schaalparameter bepaalt strengheid: 1.0 is redelijk, 0.5 is strenger, 2.0 is milder
@@ -1163,12 +1166,11 @@ def build_player_stats():
 
 
 
-    # Impactscore via z-scores
-    rapm_z_vals = pd.to_numeric(out.get("RAPM_z"), errors="coerce").fillna(0.0)
-    xppm_z_vals = pd.to_numeric(out.get("xPPM_z"), errors="coerce").fillna(0.0)
+    # =========================
+    # IMPACTSCORE (voor dashboard) = RAPM_safe_per90
+    # =========================
+    out["ImpactScore"] = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0).round(3)
 
-    impact_base = 0.6 * rapm_z_vals + 0.4 * xppm_z_vals
-    out["ImpactScore"] = np.round(impact_base * reliability, 3)
 
     # =========================
     # FINAL SCOUTING SCORE (FSS) op speler-out
@@ -1205,7 +1207,7 @@ def build_player_stats():
 
     out["Confidence"] = (np.sqrt(rel * stab) * np.sqrt(mf)).clip(0, 1).round(3)
 
-    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"]).clip(0, 1).round(3)
+    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"] * out["Minutes_factor"]).clip(0, 1).round(3)
 
     # =========================
     # PERCENTIELEN (voor dynamische filters)
@@ -1495,27 +1497,48 @@ def _compute_scouting_scores(out: pd.DataFrame) -> pd.DataFrame:
         if c not in out.columns:
             out[c] = 0.0
 
-    # SAFE impact (conservative bound)
-    mins_series = pd.to_numeric(out.get("Speelminuten"), errors="coerce").fillna(0.0)
+
+    # --- minutes series (ALTIJD definiëren; nodig voor snapshots / history) ---
+    mins_series = pd.to_numeric(
+        out.get("Speelminuten", out.get("Minutes Played", 0.0)),
+        errors="coerce"
+    ).fillna(0.0)
+    out["Speelminuten"] = mins_series
+
+    # =========================
+    # SAFE IMPACT (coach-proof, RAPM-only)
+    # =========================
+    # We gebruiken SE (niet 95% CI) om een conservatieve impact te bouwen.
+    # 95% CI op goal-based RAPM binnen 1 seizoen is vaak te breed => onrealistische safe-waarden.
+    # Daarom: "1-sigma safe" (≈ 68%) + clamp rond 0.
+    # Optioneel: cap extreme SE's (p90) om outliers te vermijden.
 
     rapm = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0)
-    rapm_ci_low = pd.to_numeric(out.get("RAPM_CI_low"), errors="coerce").fillna(0.0)
-    rapm_ci_high = pd.to_numeric(out.get("RAPM_CI_high"), errors="coerce").fillna(0.0)
+    rapm_se = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
 
-    xppm = pd.to_numeric(out.get("xPPM_per90"), errors="coerce").fillna(0.0)
-    xppm_ci_low = pd.to_numeric(out.get("xPPM_CI_low"), errors="coerce").fillna(0.0)
-    xppm_ci_high = pd.to_numeric(out.get("xPPM_CI_high"), errors="coerce").fillna(0.0)
+    # Cap SE om extreme onzekerheid niet te laten domineren (1 seizoen + goals is noisy)
+    se_cap = float(rapm_se.dropna().quantile(0.90)) if rapm_se.notna().any() else np.nan
+    rapm_se_cap = rapm_se.clip(upper=se_cap) if pd.notna(se_cap) else rapm_se
+    rapm_se_cap = rapm_se_cap.fillna(0.0)
 
-    out["RAPM_safe_per90"] = np.where(rapm >= 0, rapm_ci_low, rapm_ci_high)
-    out["xPPM_safe_per90"] = np.where(xppm >= 0, xppm_ci_low, xppm_ci_high)
-    out["SafeImpact_per90"] = (out["RAPM_safe_per90"] + out["xPPM_safe_per90"])
+    z_safe = 1.0  # 1-sigma safe (coach-proof; 1.96 is te streng/noisy met goals-only)
+
+    safe_pos = (rapm - z_safe * rapm_se_cap)
+    safe_neg = (rapm + z_safe * rapm_se_cap)
+
+    # Clamp rond 0: positieve impact kan niet "conservatief" negatief worden en omgekeerd
+    out["RAPM_safe_per90"] = np.where(rapm >= 0, np.maximum(0.0, safe_pos), np.minimum(0.0, safe_neg)).round(3)
+
+    # Voor scouting gebruiken we enkel RAPM-safe als "SafeImpact"
+    out["SafeImpact_per90"] = out["RAPM_safe_per90"].round(3)
+
 
     # SNR
     rapm_se = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
-    xppm_se = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
+    #xppm_se = pd.to_numeric(out.get("xPPM_SE"), errors="coerce").replace(0, np.nan)
 
     out["RAPM_SNR"] = (rapm.abs() / rapm_se).replace([np.inf, -np.inf], np.nan)
-    out["xPPM_SNR"] = (xppm.abs() / xppm_se).replace([np.inf, -np.inf], np.nan)
+    out["xPPM_SNR"] = np.nan
 
     # Minutes factor (dynamic, based on pct within snapshot)
     mins_ref = float(mins_series[mins_series > 0].quantile(0.80)) if (mins_series > 0).any() else 1.0
@@ -1530,38 +1553,62 @@ def _compute_scouting_scores(out: pd.DataFrame) -> pd.DataFrame:
     rapm_snr_factor = out["RAPM_SNR"].apply(snr_to_conf)
     xppm_snr_factor = out["xPPM_SNR"].apply(snr_to_conf)
 
-    snr_combined = np.where(
-        out["RAPM_SNR"].notna() & out["xPPM_SNR"].notna(),
-        0.5 * (rapm_snr_factor + xppm_snr_factor),
-        np.where(out["RAPM_SNR"].notna(), rapm_snr_factor, np.where(out["xPPM_SNR"].notna(), xppm_snr_factor, 0.0)),
-    )
+    snr_combined = np.where(out["RAPM_SNR"].notna(), rapm_snr_factor, 0.0)
+
 
     reliability = np.sqrt(minutes_factor_linear * snr_combined)
     out["Reliability_overall"] = np.round(pd.Series(reliability).fillna(0.0).clip(0, 1), 3)
 
     # Stability (low SE -> high)
-    se_combined = np.where(
-        pd.Series(rapm_se).notna() & pd.Series(xppm_se).notna(),
-        0.5 * (pd.Series(rapm_se).fillna(np.nan) + pd.Series(xppm_se).fillna(np.nan)),
-        np.where(pd.Series(rapm_se).notna(), pd.Series(rapm_se), np.where(pd.Series(xppm_se).notna(), pd.Series(xppm_se), np.nan)),
-    )
+    se_combined = pd.Series(rapm_se)
+
     se_scale = 1.0
     stability = 1.0 / (1.0 + (pd.Series(se_combined) / se_scale))
     out["StabilityScore"] = np.round(pd.Series(stability).fillna(0.0).clip(0, 1), 3)
 
-    # ImpactScore (z-based, weighted by reliability)
-    rapm_z_vals = pd.to_numeric(out.get("RAPM_z"), errors="coerce").fillna(0.0)
-    xppm_z_vals = pd.to_numeric(out.get("xPPM_z"), errors="coerce").fillna(0.0)
-    impact_base = 0.6 * rapm_z_vals + 0.4 * xppm_z_vals
-    out["ImpactScore"] = np.round(impact_base * out["Reliability_overall"], 3)
+    # =========================
+    # IMPACTSCORE (RAPM estimate) + SAFE (for robustness)
+    # =========================
+    # Definitie:
+    # - ImpactScore = RAPM_per90 (estimate; direction & magnitude)
+    # - RAPM_safe_per90 blijft bestaan als conservatieve ondergrens (niet gebruiken als ranking op 1 seizoen)
+    #
+    # Waarom:
+    # RAPM_safe_per90 (lower bound) is met 1 seizoen + goals vaak bijna altijd negatief (te conservatief),
+    # wat FSS kan platdrukken. Coaches hebben een bruikbaar "signaal" nodig (ImpactScore) + zekerheid (Confidence).
 
-    # Robust normalization inside snapshot
+    # =========================
+    # IMPACTSCORE (RAPM estimate) + SAFE (for robustness)
+    # =========================
+    # ImpactScore = RAPM_per90 (estimate; direction & magnitude).
+    # RAPM_safe_per90 blijft bestaan als conservatieve ondergrens (niet gebruiken als ranking op 1 seizoen).
+
+    out["ImpactScore"] = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0).round(3)
+
+    # Impact confidence: strength of signal (not a ranking metric)
+    rapm_vals = pd.to_numeric(out.get("RAPM_per90"), errors="coerce").fillna(0.0)
+    rapm_se_vals = pd.to_numeric(out.get("RAPM_SE_per90"), errors="coerce").replace(0, np.nan)
+    out["Impact_confidence"] = (
+        (rapm_vals.abs() / rapm_se_vals)
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .clip(0, 2)
+        .round(3)
+    )
+
+    # Robust z-score normalisatie binnen competitie/snapshot:
+    # z_robust = (x - median) / MAD, gecapt in [-3, +3]
     impact_vals = pd.to_numeric(out.get("ImpactScore"), errors="coerce").fillna(0.0)
-    p10 = float(impact_vals.quantile(0.10))
-    p90 = float(impact_vals.quantile(0.90))
-    denom = (p90 - p10) if (p90 - p10) != 0 else 1.0
-    out["Impact_norm"] = ((impact_vals - p10) / denom).clip(0, 1).round(3)
+    med = float(impact_vals.median()) if len(impact_vals) else 0.0
+    mad = float((impact_vals - med).abs().median()) if len(impact_vals) else 0.0
+    mad = mad if mad > 1e-9 else 1.0
+    out["Impact_z_robust"] = ((impact_vals - med) / mad).clip(-3, 3).round(3)
 
+    # Impact_norm als robuuste z-score in [-3, +3] (coach-friendly schaal)
+    out["Impact_norm"] = out["Impact_z_robust"].round(3)
+
+    # Impact_norm01 in [0,1] (handig voor UI/percentielen indien nodig)
+    out["Impact_norm01"] = ((out["Impact_z_robust"] + 3.0) / 6.0).clip(0, 1).round(3)
     # Logistic minutes factor, centered at snapshot p60
     m = float(mins_series[mins_series > 0].quantile(0.60)) if (mins_series > 0).any() else 0.0
     p90m = float(mins_series[mins_series > 0].quantile(0.90)) if (mins_series > 0).any() else (m + 1.0)
@@ -1573,7 +1620,7 @@ def _compute_scouting_scores(out: pd.DataFrame) -> pd.DataFrame:
     mf = pd.to_numeric(out.get("Minutes_factor"), errors="coerce").fillna(0.0).clip(0, 1)
     out["Confidence"] = (np.sqrt(rel * stab) * np.sqrt(mf)).clip(0, 1).round(3)
 
-    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"]).clip(0, 1).round(3)
+    out["FinalScoutingScore"] = (out["Impact_norm"] * out["Confidence"] * out["Minutes_factor"]).round(3)
     return out
 
 def build_player_stats_df(player_match_df: pd.DataFrame, match_events_df: pd.DataFrame, calendar_df: pd.DataFrame | None = None) -> pd.DataFrame:
